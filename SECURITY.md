@@ -32,3 +32,6 @@ URL 不接受用户信息、片段或常见凭据查询参数。不要在 URL �
 ## 报告问题
 
 请勿在公开议题中粘贴真实凭据或可利用的私有信息。先通过维护者 GitHub 资料中提供的合适联系渠道联系；如仓库启用了私密漏洞报告，可使用 Security → Report a vulnerability。没有确认启用私密报告前，不要把公开 issue 当作私密渠道。
+## Codex speed data
+
+The speed monitor reads local Codex session logs for timestamps and token counts. It exposes only numeric summaries, status and timestamps; it does not return paths, thread IDs, prompts, replies or tool arguments. It does not read credentials or start model requests. The LAN bridge does not expose this data.

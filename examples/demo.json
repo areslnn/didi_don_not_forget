@@ -83,5 +83,15 @@
     ],
     "error": null,
     "sourceLabel": "示例中转站"
+  },
+  "codexSpeed": {
+    "status": "ready",
+    "tokensPerSecond": 37.4,
+    "outputTokens": 748,
+    "outputDurationMs": 20000,
+    "updatedAt": "2026-01-01T04:00:00+00:00",
+    "label": "最近回复均速",
+    "detail": "虚构示例",
+    "scopeLabel": "示例对话"
   }
 }

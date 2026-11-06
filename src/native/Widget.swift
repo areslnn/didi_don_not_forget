@@ -10,8 +10,19 @@ struct DashboardData: Decodable {
     struct Memory: Decodable { let usedBytes: Double?; let totalBytes: Double? }
     struct Battery: Decodable { let present: Bool?; let percent: Double?; let charging: Bool?; let onAC: Bool? }
     struct SystemData: Decodable { let updatedAt: String?; let cpu: CPU?; let memory: Memory?; let battery: Battery? }
+    struct CodexSpeed: Decodable {
+        let status: String?
+        let tokensPerSecond: Double?
+        let outputTokens: Int?
+        let outputDurationMs: Double?
+        let updatedAt: String?
+        let label: String?
+        let detail: String?
+        let scopeLabel: String?
+    }
     let account: Account?
     let system: SystemData?
+    let codexSpeed: CodexSpeed?
     var mainWindow: Window? { account?.windows?.first(where: { $0.windowDurationMins == 10080 }) ?? account?.windows?.first }
 }
 
@@ -22,6 +33,7 @@ final class WidgetPanel: NSPanel {
 
 @MainActor
 final class WidgetView: NSView {
+    static let preferredSize = NSSize(width: 360, height: 454)
     var data: DashboardData? { didSet { needsDisplay = true } }
     var demonstrationDate: Date? { didSet { needsDisplay = true } }
     var isDemo = false { didSet { needsDisplay = true } }
@@ -40,6 +52,11 @@ final class WidgetView: NSView {
         let remaining = expiry - (demonstrationDate ?? Date()).timeIntervalSince1970
         if remaining <= 0 { return "expired" }
         return remaining <= 3 * 24 * 60 * 60 ? "soon" : "normal"
+    }
+    var displayedSpeedText: String {
+        guard !connectionError, data?.codexSpeed?.status == "ready", let speed = data?.codexSpeed?.tokensPerSecond,
+              speed.isFinite, speed >= 0 else { return "—" }
+        return "≈ " + String(format: "%.1f", speed) + " Token/s"
     }
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -85,7 +102,10 @@ final class WidgetView: NSView {
     }
     private func isoTime(_ value: String?) -> Date? {
         guard let value else { return nil }
-        return ISO8601DateFormatter().date(from: value)
+        let formatter = ISO8601DateFormatter()
+        if let date = formatter.date(from: value) { return date }
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.date(from: value)
     }
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
@@ -134,6 +154,26 @@ final class WidgetView: NSView {
         let battery = system?.battery
         metric(title: battery?.present == false ? "供电" : "电量", value: battery?.present == false ? "外接" : display(battery?.percent), unit: battery?.present == false ? "" : "%", x: 252, width: 82)
         rule(y: 319)
+        let speed = data?.codexSpeed
+        label("最近回复均速", NSRect(x: 25, y: 331, width: 160, height: 18), size: 11, color: muted)
+        let speedTime = isoTime(speed?.updatedAt)
+        let speedReady = !connectionError && speed?.status == "ready"
+        let speedState: String
+        if let speedTime {
+            var calendar = Calendar(identifier: .gregorian)
+            calendar.timeZone = TimeZone(identifier: "Asia/Shanghai")!
+            let today = calendar.isDateInToday(speedTime)
+            let clock = localTime(speedTime, format: today ? "HH:mm" : "MM/dd HH:mm")
+            let scope = speed?.scopeLabel.map { String($0.prefix(12)) } ?? ""
+            speedState = speedReady ? (!today ? "上次 " + clock : (scope.isEmpty ? clock : scope + " · " + clock)) : "旧读数 " + clock
+        } else { speedState = speedReady ? "时间未提供" : (speed?.status == "unavailable" || connectionError ? "暂不可测" : "等待回复完成") }
+        label(speedState, NSRect(x: 182, y: 332, width: 153, height: 17), size: 9, color: muted, digits: true, align: .right)
+        label(displayedSpeedText, NSRect(x: 25, y: 350, width: 310, height: 32), size: 25, weight: .medium, digits: true)
+        let suppliedDetail = speed?.detail.flatMap { $0.isEmpty ? nil : String($0.prefix(60)) }
+        let speedDetail = speed?.status == "ready" ? "回复结束后更新 · 不含思考与工具等待"
+            : (suppliedDetail ?? "回复结束后更新 · 不含思考与工具等待")
+        label(speedDetail, NSRect(x: 25, y: 383, width: 310, height: 15), size: 9, color: muted)
+        rule(y: 405)
         let updated = isoTime(data?.account?.updatedAt)
         let systemUpdated = isoTime(data?.system?.updatedAt)
         let oldSystem = systemUpdated.map { (demonstrationDate ?? Date()).timeIntervalSince($0) > 60 } ?? true
@@ -144,12 +184,12 @@ final class WidgetView: NSView {
         else if staleAccount { status = updated == nil ? (data?.account?.error == nil ? "正在连接账号…" : "账号暂未连接") : "额度同步暂缓 · " + localTime(updated, format: "HH:mm") }
         else if oldSystem { status = "电脑状态待同步" }
         else { status = "额度 " + localTime(updated, format: "HH:mm") + " · 每 5 分钟更新" }
-        let dot = NSBezierPath(ovalIn: NSRect(x: 25, y: 341, width: 5, height: 5))
+        let dot = NSBezierPath(ovalIn: NSRect(x: 25, y: 427, width: 5, height: 5))
         if connectionError || staleAccount || oldSystem { muted.setStroke(); dot.lineWidth = 1; dot.stroke() }
         else { ink.withAlphaComponent(0.8).setFill(); dot.fill() }
-        label(status, NSRect(x: 37, y: 334, width: 270, height: 20), size: 10, color: muted)
+        label(status, NSRect(x: 37, y: 420, width: 270, height: 20), size: 10, color: muted)
         let expiryAnnouncement = expiryHighlighted ? "。\(expiryLabel)" : ""
-        setAccessibilityValue("Codex，\(window?.label ?? "额度")剩余 \(value)%，重置卡 \(display(data?.account?.resetCredits?.availableCount)) 张\(expiryAnnouncement)。\(status)")
+        setAccessibilityValue("Codex，\(window?.label ?? "额度")剩余 \(value)%，重置卡 \(display(data?.account?.resetCredits?.availableCount)) 张\(expiryAnnouncement)。最近回复均速 \(displayedSpeedText)。\(speedDetail)。\(status)")
     }
     private func metric(title: String, value: String, unit: String, x: CGFloat, width: CGFloat) {
         label(title, NSRect(x: x, y: 258, width: width, height: 17), size: 11, color: muted)
@@ -168,6 +208,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var relayView: RelayView!
     var statusItem: NSStatusItem!
     var timer: Timer?
+    var backendTimer: Timer?
     var inFlight = false
     var snapshotPath: String?
     var snapshotTarget = "codex"
@@ -210,7 +251,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         relay.start()
         backend.ensureRunning()
         fetch()
-        timer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in Task { @MainActor in self?.backend.ensureRunning(); self?.fetch() } }
+        timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in Task { @MainActor in self?.fetch() } }
+        backendTimer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in Task { @MainActor in self?.backend.ensureRunning() } }
         if args.contains("--connect-relay") && snapshotPath == nil { relay.showLogin() }
         if snapshotPath != nil { DispatchQueue.main.asyncAfter(deadline: .now() + 18) { [weak self] in self?.exportSnapshot() } }
     }
@@ -221,10 +263,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         result.isOpaque = false
         result.hasShadow = true
         result.hidesOnDeactivate = false
-        result.isFloatingPanel = true
         result.isMovableByWindowBackground = true
-        result.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
-        result.level = alwaysOnTop ? .floating : .normal
+        WidgetWindowPolicy.apply(to: result, pinned: alwaysOnTop)
         result.delegate = self
         return result
     }
@@ -240,7 +280,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         return result
     }
     func createPanel() {
-        let size = NSSize(width: 360, height: 376)
+        let size = WidgetView.preferredSize
         let screen = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
         let initial = NSRect(x: screen.maxX-size.width-26, y: screen.maxY-size.height-26, width: size.width, height: size.height)
         panel = makePanel(frame: initial, title: "Codex 桌面组件")
@@ -254,8 +294,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             panel.setFrameAutosaveName("GPTDesktopWidgetFrame")
             panel.setFrameUsingName("GPTDesktopWidgetFrame")
         }
+        let restored = panel.frame
+        panel.setFrame(NSRect(x: restored.minX, y: restored.maxY-size.height, width: size.width, height: size.height), display: false)
         clampToScreens(panel)
-        panel.orderFrontRegardless()
+        WidgetWindowPolicy.show(panel, pinned: alwaysOnTop)
     }
     func createRelayPanel() {
         let size = RelayView.preferredSize
@@ -272,7 +314,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             relayPanel.setFrameUsingName("RelayDesktopWidgetFrame")
         }
         clampToScreens(relayPanel)
-        relayPanel.orderFrontRegardless()
+        WidgetWindowPolicy.show(relayPanel, pinned: alwaysOnTop)
     }
     private func suggestedRelayFrame() -> NSRect {
         let size = RelayView.preferredSize
@@ -337,18 +379,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func showContextMenu(_ anchor: NSView) { makeMenu().popUp(positioning: nil, at: NSPoint(x: 0, y: anchor.bounds.maxY), in: anchor) }
     func refreshMenus() { statusItem.menu = makeMenu() }
     @objc func toggleVisible() {
-        if panel.isVisible { panel.orderOut(nil) } else { clampToScreens(panel); panel.orderFrontRegardless() }
+        if panel.isVisible { panel.orderOut(nil) } else { clampToScreens(panel); WidgetWindowPolicy.show(panel, pinned: alwaysOnTop) }
         refreshMenus()
     }
     @objc func toggleRelayVisible() {
-        if relayPanel.isVisible { relayPanel.orderOut(nil) } else { clampToScreens(relayPanel); relayPanel.orderFrontRegardless() }
+        if relayPanel.isVisible { relayPanel.orderOut(nil) } else { clampToScreens(relayPanel); WidgetWindowPolicy.show(relayPanel, pinned: alwaysOnTop) }
         refreshMenus()
     }
     @objc func togglePin() {
         if demoMode { demoPin.toggle() } else { UserDefaults.standard.set(!alwaysOnTop, forKey: "alwaysOnTop") }
         for card in [panel, relayPanel] {
-            card?.level = alwaysOnTop ? .floating : .normal
-            if card?.isVisible == true { card?.orderFrontRegardless() }
+            guard let card else { continue }
+            let visible = card.isVisible
+            WidgetWindowPolicy.apply(to: card, pinned: alwaysOnTop)
+            if visible { WidgetWindowPolicy.show(card, pinned: alwaysOnTop) }
         }
         refreshMenus()
     }
@@ -367,7 +411,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         panel.setFrameOrigin(NSPoint(x: area.maxX-panel.frame.width-26, y: area.maxY-panel.frame.height-26))
         relayPanel.setFrame(suggestedRelayFrame(), display: true)
         clampToScreens(relayPanel)
-        panel.orderFrontRegardless(); relayPanel.orderFrontRegardless(); refreshMenus()
+        WidgetWindowPolicy.show(panel, pinned: alwaysOnTop); WidgetWindowPolicy.show(relayPanel, pinned: alwaysOnTop); refreshMenus()
     }
     @objc func quitApp() { NSApp.terminate(nil) }
     func fetch() {
@@ -462,12 +506,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         for card in [panel, relayPanel] {
             guard let card else { continue }
             clampToScreens(card)
-            card.orderFrontRegardless()
+            WidgetWindowPolicy.show(card, pinned: alwaysOnTop)
         }
         refreshMenus()
         return false // This delegate has handled the reopen; suppress default ordering.
     }
-    func applicationWillTerminate(_ notification: Notification) { timer?.invalidate(); session.invalidateAndCancel(); sharing.stop(); relay.stop(); backend.stop() }
+    func applicationWillTerminate(_ notification: Notification) { timer?.invalidate(); backendTimer?.invalidate(); session.invalidateAndCancel(); sharing.stop(); relay.stop(); backend.stop() }
 }
 
 @main

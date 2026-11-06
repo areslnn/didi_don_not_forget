@@ -23,8 +23,8 @@ cat > "$app_bundle/Contents/Info.plist" <<'PLIST'
 <key>CFBundleIdentifier</key><string>io.github.aiusagedashboard</string>
 <key>CFBundleExecutable</key><string>AIUsageDashboard</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleVersion</key><string>1</string>
-<key>CFBundleShortVersionString</key><string>0.1.0</string>
+<key>CFBundleVersion</key><string>2</string>
+<key>CFBundleShortVersionString</key><string>0.2.0</string>
 <key>LSMinimumSystemVersion</key><string>14.0</string>
 <key>LSUIElement</key><true/>
 <key>NSHighResolutionCapable</key><true/>
@@ -33,7 +33,7 @@ cat > "$app_bundle/Contents/Info.plist" <<'PLIST'
 PLIST
 xcrun swiftc -swift-version 5 -O -framework AppKit -framework WebKit -framework Security \
   -target "$native_arch-apple-macos14.0" -module-cache-path "$PWD/build/module-cache" \
-  src/native/BackendController.swift src/native/SharingController.swift \
+  src/native/WindowPolicy.swift src/native/BackendController.swift src/native/SharingController.swift \
   src/native/RelayModels.swift src/native/RelayAPIClient.swift src/native/RelaySettings.swift \
   src/native/RelayView.swift src/native/RelayConnection.swift src/native/Widget.swift \
   -o "$app_bundle/Contents/MacOS/AIUsageDashboard"

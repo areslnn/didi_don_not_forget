@@ -9,3 +9,7 @@ xcrun swiftc -swift-version 5 -module-cache-path "$PWD/build/module-cache" \
   src/native/RelayModels.swift src/native/RelayAPIClient.swift tests/RelayAPIClientTests.swift \
   -o build/tests/relay-api-tests
 build/tests/relay-api-tests
+
+xcrun swiftc -swift-version 5 -framework AppKit -module-cache-path "$PWD/build/module-cache" \
+  src/native/WindowPolicy.swift tests/WindowPolicyTests.swift -o build/tests/window-policy-tests
+build/tests/window-policy-tests

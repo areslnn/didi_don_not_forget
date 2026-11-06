@@ -1,3 +1,6 @@
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/service"))
 import importlib.util
 from pathlib import Path
 import types
@@ -10,6 +13,24 @@ spec.loader.exec_module(d)
 
 
 class BackendContractTests(unittest.TestCase):
+    def test_speed_route_does_not_read_full_dashboard(self):
+        class Monitor:
+            def snapshot(self): return {"status": "ready", "tokensPerSecond": 12.3}
+        class State:
+            speed_monitor = Monitor()
+            def snapshot(self): raise AssertionError("Full dashboard accessed")
+        handler = d.DashboardHandler.__new__(d.DashboardHandler)
+        handler.path = "/api/codex-speed"
+        handler.command = "GET"
+        handler.server = types.SimpleNamespace(state=State())
+        handler.allowed_request = lambda: True
+        result = []
+        handler.reply = lambda status, body, mime: result.append((status, body))
+        handler.do_GET()
+        import json
+        self.assertEqual(result[0][0], 200)
+        self.assertEqual(json.loads(result[0][1]), {"status": "ready", "tokensPerSecond": 12.3})
+
     def test_weekly_primary_not_mislabelled_five_hour_and_null_not_zero(self):
         data = d.normalize_account({"rateLimitsByLimitId": {"codex": {
             "primary": {"usedPercent": 16, "windowDurationMins": 10080, "resetsAt": 1794379060},

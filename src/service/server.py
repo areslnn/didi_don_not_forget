@@ -24,6 +24,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit, parse_qs
+from codex_speed import SpeedMonitor
 
 ROOT = Path(__file__).resolve().parent
 ACCOUNT_INTERVAL = 300
@@ -282,6 +283,7 @@ class SystemSampler:
 
 class DashboardState:
     def __init__(self):
+        self.speed_monitor = SpeedMonitor()
         self.lock = threading.Lock()
         self.refresh = threading.Event()
         self.last_request = 0
@@ -296,6 +298,7 @@ class DashboardState:
                        "uptimeSeconds": None, "gpu": {"name": None, "cores": None, "usagePercent": None}, "temperatureC": None}
 
     def start(self):
+        self.speed_monitor.start()
         threading.Thread(target=self.account_loop, name="account-monitor", daemon=True).start()
         threading.Thread(target=self.system_loop, name="system-monitor", daemon=True).start()
 
@@ -332,7 +335,9 @@ class DashboardState:
 
     def snapshot(self):
         with self.lock:
-            return {"fetchedAt": utc_now(), "account": copy.deepcopy(self.account), "system": copy.deepcopy(self.system)}
+            value = {"fetchedAt": utc_now(), "account": copy.deepcopy(self.account), "system": copy.deepcopy(self.system)}
+        value["codexSpeed"] = self.speed_monitor.snapshot()
+        return value
 
 
 class DashboardHandler(BaseHTTPRequestHandler):
@@ -374,6 +379,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
         parsed = urlsplit(self.path)
         if parsed.path == "/api/health":
             return self.reply(200, b'{"service":"gpt-mac-dashboard"}', "application/json; charset=utf-8")
+        if parsed.path == "/api/codex-speed":
+            data = json.dumps(self.server.state.speed_monitor.snapshot(), ensure_ascii=False, allow_nan=False).encode()
+            return self.reply(200, data, "application/json; charset=utf-8")
         if parsed.path == "/api/dashboard":
             if self.command == "GET" and parse_qs(parsed.query).get("refresh") == ["1"]:
                 self.server.state.request_refresh()
@@ -439,6 +447,7 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
+        state.speed_monitor.stop()
         close_rpc_processes()
         server.server_close()
 
