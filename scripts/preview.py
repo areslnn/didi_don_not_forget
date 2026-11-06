@@ -20,7 +20,7 @@ def demo():
     stamp = dt.datetime.fromtimestamp(now, dt.timezone.utc).isoformat(timespec='seconds')
     data['demo'] = True
     data['fetchedAt'] = stamp
-    for name in ('account', 'system', 'starsg'):
+    for name in ('account', 'system', 'relay'):
         data[name]['updatedAt'] = stamp
     data['account']['windows'][0]['resetsAt'] = now + 4 * 86400
     for i, card in enumerate(data['account']['resetCredits']['credits']):

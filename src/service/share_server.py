@@ -21,11 +21,15 @@ import signal
 import stat
 import threading
 import time
+import uuid
 from urllib.parse import parse_qs, urlsplit
 
 ROOT = Path(__file__).resolve().parent
 SESSION_SECONDS = 30 * 24 * 60 * 60
 COOKIE_NAME = "gpt_display_session"
+MAX_SAFE_INTEGER = (1 << 53) - 1
+MAX_RELAY_ENTRIES = 1000
+MAX_RELAY_CACHE_BYTES = 2 * 1024 * 1024
 PRIVATE_NETWORKS = tuple(ipaddress.ip_network(n) for n in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"))
 
 
@@ -50,7 +54,12 @@ def date_string(value):
 def number(value, minimum=0, maximum=None):
     if isinstance(value, bool) or not isinstance(value, (float, int)):
         return None
-    if not math.isfinite(value) or value < minimum or (maximum is not None and value > maximum):
+    if value < minimum or (maximum is not None and value > maximum):
+        return None
+    try:
+        if not math.isfinite(value):
+            return None
+    except OverflowError:
         return None
     return value
 
@@ -137,48 +146,76 @@ def read_json(path, limit=256_000):
         return {}
 
 
-def safe_starsg(cache, diagnostic, now=None):
+def safe_integer(value):
+    if isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= MAX_SAFE_INTEGER:
+        return value
+    return None
+
+
+def connection_id(value):
+    if not isinstance(value, str) or not re.fullmatch(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}", value):
+        return None
+    return str(uuid.UUID(value))
+
+
+def safe_relay(cache, diagnostic, config, now=None):
+    """Publish optional metrics only for the currently configured connection."""
     now = time.time() if now is None else now
-    cache, diagnostic = mapping(cache), mapping(diagnostic)
-    empty = {"status": "unconnected", "updatedAt": None, "periodLabel": "最近30天", "entries": [],
-             "error": "请在 Mac 组件连接 Starsg。"}
+    cache, diagnostic, config = mapping(cache), mapping(diagnostic), mapping(config)
+    empty = {"status": "unconnected", "updatedAt": None, "periodLabel": "用量统计",
+             "sourceLabel": "中转站", "entries": [], "error": "请在 Mac 组件配置中转站。"}
+    expected_id = connection_id(config.get("connectionID"))
+    if expected_id is None or connection_id(cache.get("connectionID")) != expected_id:
+        return empty
     captured = timestamp(cache.get("capturedAt"))
-    if captured is None or captured > now + 60 or re.sub(r"\s+", "", str(cache.get("periodLabel", ""))) != "最近30天":
+    cache_status = cache.get("status")
+    if captured is None or captured > now + 60 or cache_status not in ("live", "stale", "snapshot"):
         return empty
     raw_entries = cache.get("entries")
-    if not isinstance(raw_entries, list) or len(raw_entries) > 100:
+    if not isinstance(raw_entries, list) or len(raw_entries) > MAX_RELAY_ENTRIES:
         return empty
+    if not raw_entries and cache_status != "live":
+        return empty  # Only a successful complete snapshot establishes no usage.
     entries = []
     for row in raw_entries:
         row = mapping(row)
         name = text(row.get("name"), 200)
-        calls = row.get("calls")
-        amount = number(row.get("amountUSD"), maximum=1e12)
-        share = number(row.get("sharePercent"), maximum=100)
-        if not name or isinstance(calls, bool) or not isinstance(calls, int) or not 0 <= calls <= 1e12 or amount is None or share is None:
+        if not name or not name.strip():
             return empty
-        entries.append({"name": name, "calls": calls, "amountUSD": amount, "sharePercent": share})
-    total = sum(row["amountUSD"] for row in entries)
-    if any(abs((row["amountUSD"] / total * 100 if total else 0) - row["sharePercent"]) > 0.11 for row in entries):
-        return empty
+        input_tokens = safe_integer(row.get("inputTokens"))
+        output_tokens = safe_integer(row.get("outputTokens"))
+        total_tokens = safe_integer(row.get("totalTokens"))
+        if total_tokens is None and input_tokens is not None and output_tokens is not None:
+            total_tokens = safe_integer(input_tokens + output_tokens)
+        amount = number(row.get("amountUSD"), maximum=1e12)
+        entries.append({"name": name, "calls": safe_integer(row.get("calls")),
+                        "inputTokens": input_tokens, "outputTokens": output_tokens, "totalTokens": total_tokens,
+                        "amountUSD": amount, "sharePercent": None})
+    if entries and all(row["amountUSD"] is not None for row in entries):
+        total = sum(row["amountUSD"] for row in entries)
+        if math.isfinite(total) and total > 0:
+            for row in entries:
+                row["sharePercent"] = row["amountUSD"] / total * 100
     phase = diagnostic.get("phase")
     observed = timestamp(diagnostic.get("updatedAt"))
     # Status written separately can be newer than the last successful data file.
     # Never promote old values because the bridge itself has just refreshed.
-    current_diagnostic = observed is not None and observed >= captured - 1
-    live = cache.get("status") == "live" and now - captured <= 360 and current_diagnostic and phase == "live"
+    current_diagnostic = (connection_id(diagnostic.get("connectionID")) == expected_id
+                          and observed is not None and captured - 1 <= observed <= now + 60)
+    live = cache_status == "live" and now - captured <= 360 and current_diagnostic and phase == "live"
     error = None
     if not live:
         if current_diagnostic and phase == "unconnected":
-            error = "Starsg 登录已失效，请在 Mac 组件重新登录。"
-        elif cache.get("status") == "snapshot":
+            error = "中转站连接已失效，请在 Mac 组件检查设置或重新登录。"
+        elif cache_status == "snapshot":
             error = "单次读取；请在 Mac 组件连接自动更新。"
         elif current_diagnostic and phase in ("loading", "reading", "preparing", "verifying_graph", "waiting_for_graph", "document_ready", "location_ready", "routing_to_usage"):
             error = "正在同步，保留最近读数；平台统计可能延迟。"
         else:
-            error = "Starsg 同步暂缓，保留最近读数；请在 Mac 检查连接。"
+            error = "中转站同步暂缓，保留最近读数；请在 Mac 检查连接。"
     return {"status": "live" if live else "stale", "updatedAt": cache["capturedAt"],
-            "periodLabel": "最近30天", "entries": entries, "error": error}
+            "periodLabel": text(cache.get("periodLabel"), 80) or "用量统计",
+            "sourceLabel": text(cache.get("sourceLabel"), 80) or "中转站", "entries": entries, "error": error}
 
 
 def local_endpoint(value):
@@ -228,11 +265,7 @@ class DisplayData:
                 result = copy.deepcopy(self.cached)
                 result["fetchedAt"] = utc_now()
                 result["account"] = safe_account(result["account"])
-                starsg = result["starsg"]
-                captured = timestamp(starsg.get("updatedAt"))
-                if starsg["status"] == "live" and (captured is None or time.time() - captured > 360):
-                    starsg["status"] = "stale"
-                    starsg["error"] = "Starsg 同步暂缓，保留最近读数。"
+                result["relay"] = self.read_relay()
                 return result
             failed = False
             try:
@@ -244,11 +277,19 @@ class DisplayData:
                 account["status"] = "stale" if account["updatedAt"] else "unavailable"
                 account["error"] = "Mac 额度服务暂未连接，保留最近读数。"
             self.cached = {"fetchedAt": utc_now(), "account": account,
-                           "system": safe_system(self.last_dashboard.get("system")),
-                           "starsg": safe_starsg(read_json(self.support / "starsg-snapshot.json"),
-                                                 read_json(self.support / "starsg-connection-state.json"))}
+                           "system": safe_system(self.last_dashboard.get("system"))}
             self.next_read = time.monotonic() + 10
-            return copy.deepcopy(self.cached)
+            result = copy.deepcopy(self.cached)
+            result["relay"] = self.read_relay()
+            return result
+
+    def read_relay(self):
+        # Read the configuration last and recheck on every response, including
+        # cached Mac samples, so switching sites cannot publish the former site.
+        cache = read_json(self.support / "relay-snapshot.json", MAX_RELAY_CACHE_BYTES)
+        diagnostic = read_json(self.support / "relay-connection-state.json")
+        config = read_json(self.support / "relay-config.json")
+        return safe_relay(cache, diagnostic, config)
 
 
 class PairingAuth:

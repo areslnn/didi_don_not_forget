@@ -57,7 +57,7 @@
     },
     "uptimeSeconds": 183600
   },
-  "starsg": {
+  "relay": {
     "status": "live",
     "updatedAt": "2026-01-01T04:00:00+00:00",
     "periodLabel": "最近30天",
@@ -66,15 +66,22 @@
         "name": "研究项目",
         "calls": 120,
         "amountUSD": 12.34,
-        "sharePercent": 68.6
+        "sharePercent": 68.555556,
+        "inputTokens": 800000,
+        "outputTokens": 120000,
+        "totalTokens": 920000
       },
       {
         "name": "个人助手",
         "calls": 60,
         "amountUSD": 5.66,
-        "sharePercent": 31.4
+        "sharePercent": 31.444444,
+        "inputTokens": 240000,
+        "outputTokens": 40000,
+        "totalTokens": 280000
       }
     ],
-    "error": null
+    "error": null,
+    "sourceLabel": "示例中转站"
   }
 }

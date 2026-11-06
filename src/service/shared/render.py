@@ -170,26 +170,67 @@ def _account(value, now):
     return ''.join(parts)
 
 
-def _starsg(value, now):
+def _count(value):
+    """Token and call counts are whole, finite JSON numbers, never estimates."""
+    value = _number(value)
+    if value is None or value < 0 or value > 9007199254740991 or int(value) != value:
+        return None
+    return int(value)
+
+
+def _amount(value):
+    value = _number(value)
+    return value if value is not None and 0 <= value <= 1e12 else None
+
+
+def _complete_total(value, field, count=False):
+    entries = value.get("entries")
+    if not isinstance(entries, list):
+        return None
+    if not entries:
+        # Only a successful empty response confirms a zero aggregate.
+        observed = value.get("status") == "live"
+        return 0 if observed else None
+    validate = _count if count else _amount
+    values = [validate(_mapping(entry).get(field)) for entry in entries]
+    if any(item is None for item in values):
+        return None
+    total = sum(values)
+    return total if _number(total) is not None else None
+
+
+def _relay(value, now):
     entries = _list(value.get("entries"))
-    amounts = [_number(_mapping(entry).get("amountUSD")) for entry in entries]
-    total = sum(amounts) if entries and all(v is not None for v in amounts) else 0 if value.get("status") == "live" and isinstance(value.get("entries"), list) and not entries else None
-    parts = ['<section class="starsg-section"><div class="section-heading"><h2><span class="section-no">03</span> Starsg 用量</h2><span class="subtle">',
-             _text(value.get("periodLabel"), "最近30天"), '</span></div>', _source_line(value, now, "starsg"),
-             '<div class="starsg-summary"><span>总费用</span><strong><span class="currency">$</span>' + _fmt(total, 2) + '</strong><span class="subtle">USD</span></div>']
+    tokens = _complete_total(value, "totalTokens", count=True)
+    inputs = _complete_total(value, "inputTokens", count=True)
+    outputs = _complete_total(value, "outputTokens", count=True)
+    calls = _complete_total(value, "calls", count=True)
+    amount = _complete_total(value, "amountUSD")
+    parts = ['<section class="relay-section"><div class="section-heading"><h2><span class="section-no">03</span> 中转站用量</h2><span class="subtle">',
+             _text(value.get("periodLabel"), "周期未提供"), '</span></div>',
+             '<p class="relay-source">来源 · ' + _text(value.get("sourceLabel"), "尚未连接") + '</p>',
+             _source_line(value, now, "relay"),
+             '<div class="relay-summary"><div class="token-summary"><p class="metric-label">总 Token</p><p class="token-total' + (' missing-value' if tokens is None else '') + '">',
+             _fmt(tokens) if tokens is not None else '未提供', '</p><p class="token-breakdown">输入 ' + _fmt(inputs) + ' · 输出 ' + _fmt(outputs) + '</p></div>',
+             '<div class="relay-secondary"><p>总费用 / USD</p><strong class="cost-total">' + ('<span class="currency">$</span>' + _fmt(amount, 2) if amount is not None else '未提供') +
+             '</strong><p class="call-total">调用次数 <strong>' + (_fmt(calls) if calls is not None else '未提供') + '</strong></p></div></div>']
     if value.get("error"):
         parts.append('<p class="notice">' + _text(value.get("error")) + '</p>')
-    parts.append('<div class="table-wrap"><table class="usage-table"><thead><tr><th scope="col">Key 名称</th><th scope="col" class="numeric">调用次数</th>'
-                 '<th scope="col" class="numeric">费用 / USD</th><th scope="col" class="numeric">费用占比</th></tr></thead><tbody>')
+    if entries and tokens is None:
+        parts.append('<p class="notice">部分 Key 未提供真实 Token，总量暂不合计。费用不会用于估算 Token。</p>')
+    parts.append('<div class="table-wrap"><table class="usage-table"><thead><tr><th scope="col">Key 名称</th><th scope="col" class="numeric">Token</th>'
+                 '<th scope="col" class="numeric">调用次数</th><th scope="col" class="numeric">费用 / USD</th></tr></thead><tbody>')
     for entry in entries:
         entry = _mapping(entry)
-        share = _number(entry.get("sharePercent"))
-        parts.append('<tr><th scope="row">' + _text(entry.get("name")) + '</th><td class="numeric">' + _fmt(entry.get("calls")) +
-                     '</td><td class="numeric amount">' + _fmt(entry.get("amountUSD"), 6) + '</td><td class="numeric">' +
-                     (_fmt(share, 2) + '%' if share is not None else DASH) + '</td></tr>')
+        share = _amount(entry.get("sharePercent"))
+        share = share if share is not None and share <= 100 else None
+        parts.append('<tr><th scope="row">' + _text(entry.get("name")) + '</th><td class="numeric token-cell"><strong>' + _fmt(_count(entry.get("totalTokens"))) + '</strong>'
+                     '<span class="entry-note">输入 ' + _fmt(_count(entry.get("inputTokens"))) + '</span><span class="entry-note">输出 ' + _fmt(_count(entry.get("outputTokens"))) + '</span></td>'
+                     '<td class="numeric">' + _fmt(_count(entry.get("calls"))) + '</td><td class="numeric amount">' + _fmt(_amount(entry.get("amountUSD")), 6) +
+                     ('<span class="entry-note">占比 ' + _fmt(share, 2) + '%</span>' if share is not None else '') + '</td></tr>')
     if not entries:
-        parts.append('<tr><td colspan="4" class="empty-state">' + ('当前周期暂无用量' if total == 0 else '尚未连接 · 请在 Mac 组件连接 Starsg') + '</td></tr>')
-    parts.append('</tbody></table></div><p class="scope-note">显示 Key 名称与用量汇总，密钥不会出现在此页面。</p></section>')
+        parts.append('<tr><td colspan="4" class="empty-state">' + ('当前周期暂无用量' if tokens == 0 else '尚未连接 · 请在 Mac 组件打开“中转站设置…”') + '</td></tr>')
+    parts.append('</tbody></table></div><p class="scope-note">— 表示来源未提供。Token、调用次数和费用分别按来源统计；显示名称应使用昵称或别名。</p></section>')
     return ''.join(parts)
 
 
@@ -197,7 +238,7 @@ def render_page(data, mode="display"):
     """Render a complete page; ``kindle`` deliberately contains no JavaScript."""
     data = _mapping(data)
     mode = "kindle" if mode == "kindle" else "display"
-    account, system, starsg = (_mapping(data.get(k)) for k in ("account", "system", "starsg"))
+    account, system, relay = (_mapping(data.get(k)) for k in ("account", "system", "relay"))
     now = time.time()
     date = dt.datetime.fromtimestamp(now, TZ)
     weekday = ("星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日")[date.weekday()]
@@ -209,11 +250,11 @@ def render_page(data, mode="display"):
     demo = '<p class="demo-banner">示例数据 · 非真实账号</p>' if data.get("demo") is True else ''
     return ('<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
             '<meta http-equiv="refresh" content="' + str(refresh) + '"><meta name="color-scheme" content="light">'
-            '<title>桌面看板 · AI & Mac</title><link rel="stylesheet" href="/display.css">' + script + '</head>'
+            '<title>中转站用量 · AI & Mac</title><link rel="stylesheet" href="/display.css">' + script + '</head>'
             '<body class="' + mode + '"><div class="workspace"><nav class="toolbar" aria-label="看板操作"><span class="toolbar-label">PERSONAL DASHBOARD</span>'
             '<span class="toolbar-actions"><a id="refresh" href="' + route + '">刷新</a>' + extra + '</span></nav>'
-            '<main id="dashboard" class="paper">' + demo + '<header class="masthead"><div><p class="eyebrow">YOUR MAC. YOUR WORKSPACE.</p><h1>桌面看板</h1></div>'
+            '<main id="dashboard" class="paper">' + demo + '<header class="masthead"><div><p class="eyebrow">YOUR MAC. YOUR WORKSPACE.</p><h1>中转站用量</h1></div>'
             '<div class="header-date"><p class="date-label">' + _text(date_text) + '</p><p class="subtle">北京时间 · 画面每 ' + str(refresh // 60) + ' 分钟刷新</p></div></header>'
             '<div class="dashboard-layout"><div class="machine-column">' + _system(system, now) + '</div><aside class="account-column">' + _account(account, now) + '</aside></div>'
-            + _starsg(starsg, now) + '<footer class="paper-footer"><p>电脑采样 10 秒 · 额度同步 5 分钟</p><p>局域网只读看板 · 数据时间见各区域</p></footer></main>'
+            + _relay(relay, now) + '<footer class="paper-footer"><p>电脑采样 10 秒 · 额度与中转站同步 5 分钟</p><p>局域网只读看板 · 数据时间见各区域</p></footer></main>'
             '<p class="page-caption">少一点干扰，多一点专注。</p><p class="attribution">基于 <a href="https://github.com/areslnn/didi_don_not_forget" rel="noreferrer">areslnn / didi_don_not_forget</a></p></div></body></html>')

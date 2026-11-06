@@ -23,6 +23,8 @@ final class WidgetPanel: NSPanel {
 @MainActor
 final class WidgetView: NSView {
     var data: DashboardData? { didSet { needsDisplay = true } }
+    var demonstrationDate: Date? { didSet { needsDisplay = true } }
+    var isDemo = false { didSet { needsDisplay = true } }
     var connectionError = false { didSet { needsDisplay = true } }
     var showMenu: ((NSView) -> Void)?
     private let gear = NSButton()
@@ -35,7 +37,7 @@ final class WidgetView: NSView {
     }
     var expiryState: String {
         guard let expiry = nextResetExpiry else { return "unknown" }
-        let remaining = expiry - Date().timeIntervalSince1970
+        let remaining = expiry - (demonstrationDate ?? Date()).timeIntervalSince1970
         if remaining <= 0 { return "expired" }
         return remaining <= 3 * 24 * 60 * 60 ? "soon" : "normal"
     }
@@ -93,7 +95,7 @@ final class WidgetView: NSView {
         NSColor.white.withAlphaComponent(0.20).setStroke(); bg.lineWidth = 1; bg.stroke()
         label("✳", NSRect(x: 23, y: 20, width: 25, height: 25), size: 22, color: ink.withAlphaComponent(0.8))
         label("Codex", NSRect(x: 52, y: 23, width: 145, height: 25), size: 18, weight: .semibold)
-        label("账号用量", NSRect(x: 127, y: 28, width: 100, height: 19), size: 11, color: muted)
+        label(isDemo ? "虚构示例" : "账号用量", NSRect(x: 127, y: 28, width: 100, height: 19), size: 11, color: muted)
         let window = data?.mainWindow
         label((window?.label ?? "账号额度") + " · 剩余", NSRect(x: 25, y: 66, width: 230, height: 20), size: 12, color: muted)
         let value = display(window?.remainingPercent)
@@ -134,10 +136,11 @@ final class WidgetView: NSView {
         rule(y: 319)
         let updated = isoTime(data?.account?.updatedAt)
         let systemUpdated = isoTime(data?.system?.updatedAt)
-        let oldSystem = systemUpdated.map { Date().timeIntervalSince($0) > 60 } ?? true
-        let staleAccount = data?.account?.status != "live" || (updated.map { Date().timeIntervalSince($0) > 360 } ?? true)
+        let oldSystem = systemUpdated.map { (demonstrationDate ?? Date()).timeIntervalSince($0) > 60 } ?? true
+        let staleAccount = data?.account?.status != "live" || (updated.map { (demonstrationDate ?? Date()).timeIntervalSince($0) > 360 } ?? true)
         let status: String
-        if connectionError { status = "连接已中断 · 保留最近读数" }
+        if isDemo { status = "示例数据 · 不连接真实账号" }
+        else if connectionError { status = "连接已中断 · 保留最近读数" }
         else if staleAccount { status = updated == nil ? (data?.account?.error == nil ? "正在连接账号…" : "账号暂未连接") : "额度同步暂缓 · " + localTime(updated, format: "HH:mm") }
         else if oldSystem { status = "电脑状态待同步" }
         else { status = "额度 " + localTime(updated, format: "HH:mm") + " · 每 5 分钟更新" }
@@ -157,19 +160,21 @@ final class WidgetView: NSView {
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     let backend = BackendController()
-    let starsg = StarsgConnection()
+    let relay = RelayConnection()
     let sharing = SharingController()
     var panel: WidgetPanel!
     var widget: WidgetView!
-    var starsgPanel: WidgetPanel!
-    var starsgView: StarsgView!
+    var relayPanel: WidgetPanel!
+    var relayView: RelayView!
     var statusItem: NSStatusItem!
     var timer: Timer?
     var inFlight = false
     var snapshotPath: String?
     var snapshotTarget = "codex"
     var snapshotDone = false
-    var alwaysOnTop: Bool { UserDefaults.standard.object(forKey: "alwaysOnTop") == nil ? true : UserDefaults.standard.bool(forKey: "alwaysOnTop") }
+    var demoMode = false
+    var demoPin = true
+    var alwaysOnTop: Bool { if demoMode { return demoPin }; return UserDefaults.standard.object(forKey: "alwaysOnTop") == nil ? true : UserDefaults.standard.bool(forKey: "alwaysOnTop") }
     let session: URLSession = {
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 4
@@ -180,25 +185,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         let args = CommandLine.arguments
         if let index = args.firstIndex(of: "--snapshot"), args.count > index + 1 { snapshotPath = args[index+1] }
-        if let index = args.firstIndex(of: "--snapshot-starsg"), args.count > index + 1 { snapshotPath = args[index+1]; snapshotTarget = "starsg" }
+        if let index = args.firstIndex(of: "--snapshot-codex"), args.count > index + 1 { snapshotPath = args[index+1] }
+        if let index = args.firstIndex(of: "--snapshot-relay"), args.count > index + 1 { snapshotPath = args[index+1]; snapshotTarget = "relay" }
+        demoMode = args.contains("--demo") || snapshotPath != nil
         NSApp.setActivationPolicy(.accessory)
         createPanel()
-        createStarsgPanel()
+        createRelayPanel()
         createStatusItem()
+        if demoMode {
+            widget.isDemo = true; relayView.isDemo = true
+            loadDemo()
+            if snapshotPath != nil { DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { [weak self] in self?.exportSnapshot() } }
+            return
+        }
         sharing.onStateChange = { [weak self] in self?.refreshMenus() }
         if snapshotPath == nil { sharing.startIfEnabled() }
-        starsg.onSnapshot = { [weak self] value in
+        relay.onSnapshot = { [weak self] value in
             guard let self else { return }
-            self.starsgView.snapshot = value
-            if self.snapshotPath != nil && self.snapshotTarget == "starsg" && self.starsgView.displayedTotalUSD != nil {
+            self.relayView.snapshot = value
+            if self.snapshotPath != nil && self.snapshotTarget == "relay" && self.relayView.displayedTotalUSD != nil {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { [weak self] in self?.exportSnapshot() }
             }
         }
-        starsg.start()
+        relay.start()
         backend.ensureRunning()
         fetch()
         timer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in Task { @MainActor in self?.backend.ensureRunning(); self?.fetch() } }
-        if args.contains("--connect-starsg") && snapshotPath == nil { starsg.showLogin() }
+        if args.contains("--connect-relay") && snapshotPath == nil { relay.showLogin() }
         if snapshotPath != nil { DispatchQueue.main.asyncAfter(deadline: .now() + 18) { [weak self] in self?.exportSnapshot() } }
     }
     private func makePanel(frame: NSRect, title: String) -> WidgetPanel {
@@ -237,32 +250,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         widget.showMenu = { [weak self] anchor in self?.showContextMenu(anchor) }
         background.addSubview(widget)
         panel.contentView = background
-        if snapshotPath == nil {
+        if !demoMode {
             panel.setFrameAutosaveName("GPTDesktopWidgetFrame")
             panel.setFrameUsingName("GPTDesktopWidgetFrame")
         }
         clampToScreens(panel)
         panel.orderFrontRegardless()
     }
-    func createStarsgPanel() {
-        let size = StarsgView.preferredSize
-        let frame = suggestedStarsgFrame()
-        starsgPanel = makePanel(frame: frame, title: "Starsg API 用量")
+    func createRelayPanel() {
+        let size = RelayView.preferredSize
+        let frame = suggestedRelayFrame()
+        relayPanel = makePanel(frame: frame, title: "中转站 Token 用量")
         let background = backdrop(size: size)
-        starsgView = StarsgView(frame: background.bounds)
-        starsgView.autoresizingMask = [.width, .height]
-        starsgView.showMenu = { [weak self] anchor in self?.showContextMenu(anchor) }
-        background.addSubview(starsgView)
-        starsgPanel.contentView = background
-        if snapshotPath == nil {
-            starsgPanel.setFrameAutosaveName("StarsgDesktopWidgetFrame")
-            starsgPanel.setFrameUsingName("StarsgDesktopWidgetFrame")
+        relayView = RelayView(frame: background.bounds)
+        relayView.autoresizingMask = [.width, .height]
+        relayView.showMenu = { [weak self] anchor in self?.showContextMenu(anchor) }
+        background.addSubview(relayView)
+        relayPanel.contentView = background
+        if !demoMode {
+            relayPanel.setFrameAutosaveName("RelayDesktopWidgetFrame")
+            relayPanel.setFrameUsingName("RelayDesktopWidgetFrame")
         }
-        clampToScreens(starsgPanel)
-        starsgPanel.orderFrontRegardless()
+        clampToScreens(relayPanel)
+        relayPanel.orderFrontRegardless()
     }
-    private func suggestedStarsgFrame() -> NSRect {
-        let size = StarsgView.preferredSize
+    private func suggestedRelayFrame() -> NSRect {
+        let size = RelayView.preferredSize
         let screen = NSScreen.screens.first(where: { $0.visibleFrame.intersects(panel.frame) })?.visibleFrame
             ?? NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
         let gap: CGFloat = 18
@@ -281,15 +294,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         target.setFrame(frame, display: true)
     }
     func windowDidMove(_ notification: Notification) {
-        guard snapshotPath == nil, let moved = notification.object as? NSWindow else { return }
+        guard !demoMode, let moved = notification.object as? NSWindow else { return }
         if moved === panel { moved.saveFrame(usingName: "GPTDesktopWidgetFrame") }
-        else if moved === starsgPanel { moved.saveFrame(usingName: "StarsgDesktopWidgetFrame") }
+        else if moved === relayPanel { moved.saveFrame(usingName: "RelayDesktopWidgetFrame") }
     }
     func createStatusItem() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.title = "◈ —"
         statusItem.button?.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
-        statusItem.button?.toolTip = "Codex 与 Starsg 桌面组件"
+        statusItem.button?.toolTip = "Codex 与中转站桌面组件"
         statusItem.menu = makeMenu()
     }
     func makeMenu() -> NSMenu {
@@ -297,8 +310,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         menu.autoenablesItems = false
         let codexToggle = NSMenuItem(title: panel.isVisible ? "隐藏 Codex 组件" : "显示 Codex 组件", action: #selector(toggleVisible), keyEquivalent: "")
         codexToggle.target = self; menu.addItem(codexToggle)
-        let starsgToggle = NSMenuItem(title: starsgPanel.isVisible ? "隐藏 Starsg 组件" : "显示 Starsg 组件", action: #selector(toggleStarsgVisible), keyEquivalent: "")
-        starsgToggle.target = self; menu.addItem(starsgToggle)
+        let relayToggle = NSMenuItem(title: relayPanel.isVisible ? "隐藏中转站组件" : "显示中转站组件", action: #selector(toggleRelayVisible), keyEquivalent: "")
+        relayToggle.target = self; menu.addItem(relayToggle)
         let pin = NSMenuItem(title: "始终置顶", action: #selector(togglePin), keyEquivalent: "")
         pin.target = self; pin.state = alwaysOnTop ? .on : .off; menu.addItem(pin)
         menu.addItem(.separator())
@@ -306,14 +319,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             let item = NSMenuItem(title: title, action: action, keyEquivalent: ""); item.target = self; menu.addItem(item)
         }
         menu.addItem(.separator())
-        for (title, action) in [("连接 Starsg / 管理登录", #selector(connectStarsg)), ("刷新 Starsg", #selector(refreshStarsg))] {
+        for (title, action) in [("中转站设置…", #selector(configureRelay)), ("打开中转站登录页", #selector(connectRelay)), ("刷新中转站", #selector(refreshRelay))] {
             let item = NSMenuItem(title: title, action: action, keyEquivalent: ""); item.target = self; menu.addItem(item)
         }
         menu.addItem(.separator())
         let openSharing = NSMenuItem(title: "在 iPad / Kindle 打开…", action: #selector(openDeviceSharing), keyEquivalent: "")
         openSharing.target = self; menu.addItem(openSharing)
         let closeSharing = NSMenuItem(title: "关闭设备共享", action: #selector(closeDeviceSharing), keyEquivalent: "")
-        closeSharing.target = self; closeSharing.isEnabled = sharing.isEnabled; menu.addItem(closeSharing)
+        closeSharing.target = self; closeSharing.isEnabled = !demoMode && sharing.isEnabled; menu.addItem(closeSharing)
         let project = NSMenuItem(title: "项目源码与许可", action: #selector(openProjectSource), keyEquivalent: "")
         project.target = self; menu.addItem(project)
         menu.addItem(.separator())
@@ -327,33 +340,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if panel.isVisible { panel.orderOut(nil) } else { clampToScreens(panel); panel.orderFrontRegardless() }
         refreshMenus()
     }
-    @objc func toggleStarsgVisible() {
-        if starsgPanel.isVisible { starsgPanel.orderOut(nil) } else { clampToScreens(starsgPanel); starsgPanel.orderFrontRegardless() }
+    @objc func toggleRelayVisible() {
+        if relayPanel.isVisible { relayPanel.orderOut(nil) } else { clampToScreens(relayPanel); relayPanel.orderFrontRegardless() }
         refreshMenus()
     }
     @objc func togglePin() {
-        UserDefaults.standard.set(!alwaysOnTop, forKey: "alwaysOnTop")
-        for card in [panel, starsgPanel] {
+        if demoMode { demoPin.toggle() } else { UserDefaults.standard.set(!alwaysOnTop, forKey: "alwaysOnTop") }
+        for card in [panel, relayPanel] {
             card?.level = alwaysOnTop ? .floating : .normal
             if card?.isVisible == true { card?.orderFrontRegardless() }
         }
         refreshMenus()
     }
-    @objc func refreshDisplay() { backend.ensureRunning(); fetch() }
-    @objc func openDashboard() { NSWorkspace.shared.open(URL(string: "http://127.0.0.1:8768/")!) }
-    @objc func connectStarsg() { starsg.showLogin() }
-    @objc func openDeviceSharing() { backend.ensureRunning(); sharing.showInstructions() }
-    @objc func closeDeviceSharing() { sharing.disable() }
+    @objc func refreshDisplay() { if demoMode { loadDemo(); return }; backend.ensureRunning(); fetch() }
+    @objc func openDashboard() { guard !demoMode else { return }; NSWorkspace.shared.open(URL(string: "http://127.0.0.1:8768/")!) }
+    @objc func configureRelay() { if !demoMode { relay.showSettings() } }
+    @objc func connectRelay() { if !demoMode { relay.showLogin() } }
+    @objc func openDeviceSharing() { if !demoMode { backend.ensureRunning(); sharing.showInstructions() } }
+    @objc func closeDeviceSharing() { if !demoMode { sharing.disable() } }
     @objc func openProjectSource() { NSWorkspace.shared.open(URL(string: "https://github.com/areslnn/didi_don_not_forget")!) }
-    @objc func refreshStarsg() { starsg.refresh() }
+    @objc func refreshRelay() { if demoMode { loadDemo() } else { relay.refresh() } }
     @objc func moveToCurrentScreen() {
         let mouse = NSEvent.mouseLocation
         guard let screen = NSScreen.screens.first(where: { $0.frame.contains(mouse) }) ?? NSScreen.main else { return }
         let area = screen.visibleFrame
         panel.setFrameOrigin(NSPoint(x: area.maxX-panel.frame.width-26, y: area.maxY-panel.frame.height-26))
-        starsgPanel.setFrame(suggestedStarsgFrame(), display: true)
-        clampToScreens(starsgPanel)
-        panel.orderFrontRegardless(); starsgPanel.orderFrontRegardless(); refreshMenus()
+        relayPanel.setFrame(suggestedRelayFrame(), display: true)
+        clampToScreens(relayPanel)
+        panel.orderFrontRegardless(); relayPanel.orderFrontRegardless(); refreshMenus()
     }
     @objc func quitApp() { NSApp.terminate(nil) }
     func fetch() {
@@ -382,15 +396,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
         }.resume()
     }
+    private func loadDemo() {
+        guard demoMode, let url = Bundle.main.url(forResource: "demo", withExtension: "json"),
+              let bytes = try? Data(contentsOf: url), bytes.count <= RelayRules.maxBody,
+              let root = (try? JSONSerialization.jsonObject(with: bytes)) as? [String: Any], root["demo"] as? Bool == true,
+              let dashboard = try? JSONDecoder().decode(DashboardData.self, from: bytes) else { return }
+        widget.data = dashboard; widget.connectionError = false
+        let date = (root["fetchedAt"] as? String).flatMap { ISO8601DateFormatter().date(from: $0) } ?? Date(timeIntervalSince1970: 0)
+        widget.demonstrationDate = date
+        statusItem.button?.title = "◈ 示例"
+        guard let provider = root["relay"] as? [String: Any], let entries = provider["entries"],
+              let data = try? JSONSerialization.data(withJSONObject: entries) else { return }
+        let config = RelayConfiguration(connectionID: "00000000-0000-4000-8000-000000000001", mode: .api,
+            displayName: "示例中转站", usageURL: "https://example.invalid/usage", periodLabel: provider["periodLabel"] as? String ?? "示例周期", mapping: RelayMapping(entriesPath: ""))
+        guard let normalized = try? RelayRules.parseAPI(data, configuration: config) else { return }
+        relayView.snapshot = RelaySnapshot(connectionID: config.connectionID, periodLabel: config.periodLabel,
+            capturedAt: date, sourceLabel: "示例中转站", status: "live", entries: normalized)
+    }
     func exportSnapshot() {
         guard !snapshotDone, let path = snapshotPath else { return }
         snapshotDone = true
-        let target = snapshotTarget == "starsg" ? starsgPanel! : panel!
+        let target = snapshotTarget == "relay" ? relayPanel! : panel!
         guard let view = target.contentView, let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { NSApp.terminate(nil); return }
         view.cacheDisplay(in: view.bounds, to: bitmap)
         if let png = bitmap.representation(using: .png, properties: [:]) { try? png.write(to: URL(fileURLWithPath: path)) }
         var diagnostics: [String: Any] = [
             "target": snapshotTarget,
+            "demo": demoMode,
             "windowLevel": target.level.rawValue,
             "alwaysOnTop": alwaysOnTop,
             "canJoinAllSpaces": target.collectionBehavior.contains(.canJoinAllSpaces),
@@ -401,14 +433,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             "height": target.frame.height,
             "snapshotSaved": FileManager.default.fileExists(atPath: path)
         ]
-        if snapshotTarget == "starsg" {
-            diagnostics["sourceLabel"] = starsgView.snapshot?.sourceLabel ?? "Starsg"
-            diagnostics["accountStatus"] = starsgView.snapshot?.status ?? "unconnected"
-            diagnostics["periodLabel"] = starsgView.snapshot?.periodLabel ?? ""
-            diagnostics["entriesCount"] = starsgView.snapshot?.entries.count ?? 0
-            diagnostics["totalUSD"] = starsgView.displayedTotalUSD as Any? ?? NSNull()
-            diagnostics["totalCalls"] = starsgView.displayedTotalCalls as Any? ?? NSNull()
-            diagnostics["accessibilityValue"] = starsgView.accessibilityValue() ?? ""
+        if snapshotTarget == "relay" {
+            diagnostics["sourceLabel"] = relayView.snapshot?.sourceLabel ?? "Relay"
+            diagnostics["accountStatus"] = relayView.snapshot?.status ?? "unconnected"
+            diagnostics["periodLabel"] = relayView.snapshot?.periodLabel ?? ""
+            diagnostics["entriesCount"] = relayView.snapshot?.entries.count ?? 0
+            diagnostics["totalUSD"] = relayView.displayedTotalUSD as Any? ?? NSNull()
+            diagnostics["totalTokens"] = relayView.displayedTotalTokens as Any? ?? NSNull()
+            diagnostics["demo"] = demoMode
+            diagnostics["totalCalls"] = relayView.displayedTotalCalls as Any? ?? NSNull()
+            diagnostics["accessibilityValue"] = relayView.accessibilityValue() ?? ""
         } else {
             diagnostics["accountStatus"] = widget.data?.account?.status ?? "unavailable"
             diagnostics["remainingPercent"] = widget.data?.mainWindow?.remainingPercent as Any? ?? NSNull()
@@ -423,9 +457,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         // App activation may accompany accessibility clicks. Reordering panels or
         // replacing the status menu here would interrupt an open menu/login form.
-        guard !flag, panel?.isVisible != true, starsgPanel?.isVisible != true else { return false }
+        guard !flag, panel?.isVisible != true, relayPanel?.isVisible != true else { return false }
         guard !sender.windows.contains(where: { $0.isVisible && !$0.isMiniaturized }) else { return false }
-        for card in [panel, starsgPanel] {
+        for card in [panel, relayPanel] {
             guard let card else { continue }
             clampToScreens(card)
             card.orderFrontRegardless()
@@ -433,7 +467,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         refreshMenus()
         return false // This delegate has handled the reopen; suppress default ordering.
     }
-    func applicationWillTerminate(_ notification: Notification) { timer?.invalidate(); session.invalidateAndCancel(); sharing.stop(); starsg.stop(); backend.stop() }
+    func applicationWillTerminate(_ notification: Notification) { timer?.invalidate(); session.invalidateAndCancel(); sharing.stop(); relay.stop(); backend.stop() }
 }
 
 @main

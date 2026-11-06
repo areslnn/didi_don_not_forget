@@ -31,10 +31,11 @@ cat > "$app_bundle/Contents/Info.plist" <<'PLIST'
 <key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/><key>NSAllowsArbitraryLoads</key><true/></dict>
 </dict></plist>
 PLIST
-xcrun swiftc -swift-version 5 -O -framework AppKit -framework WebKit \
+xcrun swiftc -swift-version 5 -O -framework AppKit -framework WebKit -framework Security \
   -target "$native_arch-apple-macos14.0" -module-cache-path "$PWD/build/module-cache" \
   src/native/BackendController.swift src/native/SharingController.swift \
-  src/native/StarsgView.swift src/native/StarsgConnection.swift src/native/Widget.swift \
+  src/native/RelayModels.swift src/native/RelayAPIClient.swift src/native/RelaySettings.swift \
+  src/native/RelayView.swift src/native/RelayConnection.swift src/native/Widget.swift \
   -o "$app_bundle/Contents/MacOS/AIUsageDashboard"
 # Code and static assets only. Runtime caches, credentials and bootstrap data are excluded.
 for resource in src/service/**/*(.N); do
@@ -47,7 +48,8 @@ for resource in src/service/**/*(.N); do
   mkdir -p "$app_bundle/Contents/Resources/${resource_relative:h}"
   cp "$resource" "$app_bundle/Contents/Resources/$resource_relative"
 done
-cp src/native/StarsgReader.js "$app_bundle/Contents/Resources/StarsgReader.js"
+cp src/native/RelayReader.js "$app_bundle/Contents/Resources/RelayReader.js"
+cp examples/demo.json "$app_bundle/Contents/Resources/demo.json"
 cp LICENSE NOTICE "$app_bundle/Contents/Resources/"
 codesign --force --deep --sign - "$app_bundle"
 print "$app_bundle"

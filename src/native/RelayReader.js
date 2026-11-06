@@ -1,10 +1,10 @@
 /* Reads only rendered controls and the API-Key statistics card. No network,
    cookies, localStorage, framework state, or hidden data are accessed. */
-(() => {
+((configuration) => {
   "use strict";
   const compact = value => String(value || "").replace(/\s+/g, "").trim();
   const title = "按APIKey调用次数";
-  const periodTitle = "最近30天";
+  const periodTitle = compact(configuration.periodLabel);
   const callPattern = /([\d,]+)\s*次\s*调用/g;
   const moneyPattern = /\$\s*([\d,]+(?:\.\d{1,8})?)/g;
   const sharePattern = /(\d+(?:\.\d+)?)\s*%/g;
@@ -24,8 +24,9 @@
     return parts.join("\n");
   }
   function correctPage() {
-    const url = new URL(location.href);
-    return url.protocol === "https:" && url.hostname === "starsg.ai" && url.pathname === "/app/usage" && url.searchParams.get("line") === "llm";
+    const url = new URL(location.href), expected = new URL(configuration.usageURL);
+    return url.protocol === "https:" && !url.username && !url.password && !url.hash &&
+      url.origin === expected.origin && url.pathname === expected.pathname && url.search === expected.search;
   }
   function selectedPeriod() {
     for (const select of document.querySelectorAll("select")) {
@@ -52,10 +53,10 @@
         const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value").set;
         setter.call(period.element, period.option.value);
         period.element.dispatchEvent(new Event("change", {bubbles: true}));
-        return {action: "selected_30_days"};
+        return {action: "selected_period"};
       }
       const option = [...document.querySelectorAll('[role="option"]')].find(el => visible(el) && compact(text(el)) === periodTitle);
-      if (option) { option.click(); return {action: "selected_30_days"}; }
+      if (option) { option.click(); return {action: "selected_period"}; }
       if (period.element.getAttribute("aria-expanded") !== "true") {
         period.element.click(); return {action: "opened_period_picker"};
       }
@@ -72,7 +73,7 @@
   function read() {
     if (!correctPage()) return {status: "wrong_page", reason: "需要打开模型服务用量页"};
     const period = selectedPeriod();
-    if (!period?.correct) return {status: "not_ready", reason: "请将时间范围设为最近30天"};
+    if (!period?.correct) return {status: "not_ready", reason: "请将时间范围设为配置的统计周期"};
     const tab = statsTab();
     if (!tab || tab.getAttribute("aria-selected") !== "true") return {status: "not_ready", reason: "请切换到用量统计"};
     // A loading indicator or disabled Refresh button means the old graph must not be relabelled fresh.
@@ -119,13 +120,13 @@
           !Number.isFinite(amountUSD) || amountUSD < 0 || !Number.isFinite(reportedShare) || reportedShare < 0 || reportedShare > 100) {
         return {status: "invalid", reason: "统计值未通过校验"};
       }
-      entries.push({name, calls, amountUSD, reportedShare});
+      entries.push({name, calls, amountUSD, inputTokens: null, outputTokens: null, totalTokens: null, reportedShare});
     }
     const visibleCount = [...cardText.matchAll(callPattern)].length;
-    if (entries.length !== visibleCount || entries.length > 100) return {status: "invalid", reason: "统计行数未通过校验"};
+    if (entries.length !== visibleCount || entries.length > 1000) return {status: "invalid", reason: "统计行数未通过校验"};
     if (!entries.length) {
       if (!/暂无(?:数据|调用|记录)/.test(compact(cardText))) return {status: "not_ready", reason: "统计记录尚未加载"};
-      return {status: "ready", periodLabel: "最近30天", entries: [], emptyConfirmed: true};
+      return {status: "ready", periodLabel: configuration.periodLabel, entries: [], emptyConfirmed: true};
     }
     const total = entries.reduce((sum, entry) => sum + entry.amountUSD, 0);
     const totalCalls = entries.reduce((sum, entry) => sum + entry.calls, 0);
@@ -133,10 +134,10 @@
     for (const entry of entries) {
       const sharePercent = total > 0 ? 100 * entry.amountUSD / total : 0;
       if (Math.abs(entry.reportedShare - sharePercent) > 0.11) return {status: "invalid", reason: "费用占比与金额不符，保留上次读数"};
-      entry.sharePercent = Math.round(sharePercent * 10) / 10;
+      entry.sharePercent = total > 0 ? Math.round(sharePercent * 10) / 10 : null;
       delete entry.reportedShare;
     }
-    return {status: "ready", periodLabel: "最近30天", entries, emptyConfirmed: false};
+    return {status: "ready", periodLabel: configuration.periodLabel, entries, emptyConfirmed: false};
   }
   return {prepare, read};
-})()
+})

@@ -13,5 +13,8 @@ __pycache__/
 *.local.json
 starsg-snapshot.json
 starsg-connection-state.json
+relay-config.json
+relay-snapshot.json
+relay-connection-state.json
 display-sharing.json
 node_modules/

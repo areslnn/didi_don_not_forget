@@ -5,9 +5,9 @@ on:
 permissions:
   contents: read
 jobs:
-  test-and-build:
-    runs-on: macos-15
-    timeout-minutes: 15
+  data-and-display-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
         with:
@@ -17,5 +17,14 @@ jobs:
           python-version: '3.11'
       - name: Synthetic data and access-boundary tests
         run: python3 -m unittest discover -s tests -v
+  native-build:
+    runs-on: macos-15-intel
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Native model and isolated request tests
+        run: zsh scripts/test-native.sh
       - name: Build native application
         run: zsh scripts/build-macos.sh

@@ -21,6 +21,9 @@ sys.path.insert(0, str(SERVICE))
 import share_server as bridge
 
 CONFIG = {"accessCode": "31415926", "sessionSecret": "ab" * 32}
+CONNECTION_ID = "11111111-2222-4333-8444-555555555555"
+OTHER_CONNECTION_ID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+RELAY_CONFIG = {"connectionID": CONNECTION_ID}
 
 
 def iso(seconds):
@@ -28,8 +31,13 @@ def iso(seconds):
 
 
 def cache(now=1_800_000_000, name="Example team"):
-    return {"status": "live", "capturedAt": iso(now), "periodLabel": "最近30天",
+    return {"connectionID": CONNECTION_ID, "status": "live", "capturedAt": iso(now),
+            "sourceLabel": "Example relay", "periodLabel": "最近30天",
             "entries": [{"name": name, "calls": 12, "amountUSD": 4.5, "sharePercent": 100.0}]}
+
+
+def diagnostic(now=1_800_000_000, phase="live", connection=CONNECTION_ID):
+    return {"connectionID": connection, "phase": phase, "updatedAt": iso(now)}
 
 
 def sample():
@@ -41,7 +49,7 @@ def sample():
                 "resetCredits": {"availableCount": 1, "credits": [{"status": "available", "title": "Example credit", "expiresAt": now + 3600}]}}),
             "system": bridge.safe_system({"updatedAt": iso(now), "cpu": {"name": "Example CPU", "usagePercent": 10, "cores": 8},
                 "memory": {"usedBytes": 4_000_000_000, "totalBytes": 16_000_000_000}}),
-            "starsg": bridge.safe_starsg(cache(now), {"phase": "live", "updatedAt": iso(now)})}
+            "relay": bridge.safe_relay(cache(now), diagnostic(now), RELAY_CONFIG)}
 
 
 class FakeData:
@@ -100,26 +108,174 @@ class AuthAndDataTests(unittest.TestCase):
         self.assertNotIn("email", result)
         self.assertIsNone(bridge.safe_system({"cpu": {"usagePercent": float("nan"), "token": "PRIVATE"}})["cpu"]["usagePercent"])
 
-    def test_starsg_never_promotes_old_or_disconnected_snapshots(self):
+    def test_relay_never_promotes_old_or_disconnected_snapshots(self):
         now = 1_800_000_000
-        diagnostic = {"phase": "live", "updatedAt": iso(now), "locationPath": "/private/path", "token": "PRIVATE"}
-        fresh = bridge.safe_starsg(cache(now), diagnostic, now)
+        current = diagnostic(now)
+        fresh = bridge.safe_relay(cache(now), current, RELAY_CONFIG, now)
         self.assertEqual(fresh["status"], "live")
-        self.assertNotIn("PRIVATE", json.dumps(fresh))
-        old = bridge.safe_starsg(cache(now - 361), diagnostic, now)
+        old = bridge.safe_relay(cache(now - 361), current, RELAY_CONFIG, now)
         self.assertEqual(old["status"], "stale")
-        expired = bridge.safe_starsg(cache(now), {"phase": "unconnected", "updatedAt": iso(now + 1)}, now)
+        expired = bridge.safe_relay(cache(now), diagnostic(now + 1, "unconnected"), RELAY_CONFIG, now)
         self.assertEqual(expired["status"], "stale")
         self.assertIn("重新登录", expired["error"])
         self.assertEqual(expired["updatedAt"], iso(now))
         self.assertEqual(expired["entries"][0]["calls"], 12)
-        self.assertEqual(bridge.safe_starsg(cache(now), {}, now)["status"], "stale")
-        seeded = bridge.safe_starsg({**cache(now), "status": "snapshot"}, diagnostic, now)
+        self.assertEqual(bridge.safe_relay(cache(now), {}, RELAY_CONFIG, now)["status"], "stale")
+        seeded = bridge.safe_relay({**cache(now), "status": "snapshot"}, current, RELAY_CONFIG, now)
         self.assertEqual(seeded["status"], "stale")
         self.assertIn("单次", seeded["error"])
-        invalid = cache(now)
-        invalid["entries"][0]["sharePercent"] = 3
-        self.assertEqual(bridge.safe_starsg(invalid, diagnostic, now)["status"], "unconnected")
+
+    def test_relay_metrics_distinguish_missing_and_real_zero(self):
+        raw = cache()
+        raw["entries"] = [{"name": "Unknown"}, {"name": "No usage", "calls": 0, "inputTokens": 0,
+                                                "outputTokens": 0, "amountUSD": 0}]
+        result = bridge.safe_relay(raw, diagnostic(), RELAY_CONFIG, 1_800_000_000)
+        self.assertEqual(result["status"], "live")
+        missing, zero = result["entries"]
+        for field in ("calls", "inputTokens", "outputTokens", "totalTokens", "amountUSD", "sharePercent"):
+            self.assertIsNone(missing[field], field)
+        for field in ("calls", "inputTokens", "outputTokens", "totalTokens", "amountUSD"):
+            self.assertEqual(zero[field], 0, field)
+        self.assertIsNone(zero["sharePercent"])
+
+    def test_relay_tokens_reject_invalid_values_and_unsafe_sums(self):
+        invalid = [True, False, -1, 1.5, 1.0, "100", float("nan"), float("inf"), bridge.MAX_SAFE_INTEGER + 1, 10 ** 1000]
+        for value in invalid:
+            with self.subTest(value=repr(value)[:30]):
+                raw = cache()
+                raw["entries"][0].update(calls=value, inputTokens=value, outputTokens=value, totalTokens=value)
+                row = bridge.safe_relay(raw, diagnostic(), RELAY_CONFIG, 1_800_000_000)["entries"][0]
+                for field in ("calls", "inputTokens", "outputTokens", "totalTokens"):
+                    self.assertIsNone(row[field])
+        raw["entries"][0].update(inputTokens=bridge.MAX_SAFE_INTEGER, outputTokens=1, totalTokens=None)
+        row = bridge.safe_relay(raw, diagnostic(), RELAY_CONFIG, 1_800_000_000)["entries"][0]
+        self.assertEqual(row["inputTokens"], bridge.MAX_SAFE_INTEGER)
+        self.assertIsNone(row["totalTokens"])
+
+    def test_relay_total_uses_direct_value_or_both_components_only(self):
+        raw = cache()
+        raw["entries"] = [
+            {"name": "Direct", "totalTokens": 99, "inputTokens": 2, "outputTokens": 3},
+            {"name": "Computed", "inputTokens": 2, "outputTokens": 3},
+            {"name": "Partial", "inputTokens": 2, "amountUSD": 10},
+            {"name": "Direct zero", "totalTokens": 0},
+            {"name": "Invalid direct", "totalTokens": -1, "inputTokens": 7, "outputTokens": 8},
+        ]
+        rows = bridge.safe_relay(raw, diagnostic(), RELAY_CONFIG, 1_800_000_000)["entries"]
+        self.assertEqual([r["totalTokens"] for r in rows], [99, 5, None, 0, 15])
+        self.assertTrue(all(r["calls"] is None for r in rows))
+        self.assertTrue(all(r["sharePercent"] is None for r in rows))
+
+    def test_relay_spend_share_requires_all_amounts_and_never_uses_tokens(self):
+        raw = cache()
+        raw["entries"] = [
+            {"name": "A", "amountUSD": 1, "totalTokens": 900, "sharePercent": 90},
+            {"name": "B", "amountUSD": 3, "totalTokens": 100, "sharePercent": 10},
+        ]
+        rows = bridge.safe_relay(raw, diagnostic(), RELAY_CONFIG, 1_800_000_000)["entries"]
+        self.assertEqual([r["sharePercent"] for r in rows], [25, 75])
+        for invalid in (None, -1, True, "3", float("nan"), float("inf"), 10 ** 1000):
+            raw["entries"][1]["amountUSD"] = invalid
+            rows = bridge.safe_relay(raw, diagnostic(), RELAY_CONFIG, 1_800_000_000)["entries"]
+            self.assertIsNone(rows[1]["amountUSD"])
+            self.assertEqual([r["sharePercent"] for r in rows], [None, None])
+        for entry in raw["entries"]:
+            entry["amountUSD"] = 0
+        rows = bridge.safe_relay(raw, diagnostic(), RELAY_CONFIG, 1_800_000_000)["entries"]
+        self.assertEqual([r["amountUSD"] for r in rows], [0, 0])
+        self.assertEqual([r["sharePercent"] for r in rows], [None, None])
+
+    def test_relay_connection_id_isolates_sites_and_diagnostic_state(self):
+        raw = cache()
+        for config in ({}, {"connectionID": "not-a-uuid"}, {"connectionID": OTHER_CONNECTION_ID}):
+            result = bridge.safe_relay(raw, diagnostic(), config, 1_800_000_000)
+            self.assertEqual(result["status"], "unconnected")
+            self.assertEqual(result["entries"], [])
+            self.assertIsNone(result["updatedAt"])
+            self.assertEqual(result["sourceLabel"], "中转站")
+        for previous_state in (diagnostic(connection=OTHER_CONNECTION_ID), diagnostic(1_800_000_061)):
+            result = bridge.safe_relay(raw, previous_state, RELAY_CONFIG, 1_800_000_000)
+            self.assertEqual(result["status"], "stale")
+            self.assertEqual(result["entries"][0]["calls"], 12)
+
+    def test_relay_output_is_a_summary_without_configuration_or_secrets(self):
+        raw = cache()
+        raw.update(usageURL="https://PRIVATE.invalid/?token=PRIVATE", apiKey="PRIVATE", cookies="PRIVATE", connectionSecret="PRIVATE")
+        raw["entries"][0].update(apiKey="PRIVATE", token="PRIVATE", userEmail="PRIVATE", url="PRIVATE")
+        state = {**diagnostic(), "reason": "PRIVATE", "locationPath": "PRIVATE", "headers": {"Authorization": "PRIVATE"}}
+        config = {**RELAY_CONFIG, "usageURL": "PRIVATE", "password": "PRIVATE", "headers": {"Authorization": "PRIVATE"}}
+        result = bridge.safe_relay(raw, state, config, 1_800_000_000)
+        self.assertEqual(set(result), {"status", "updatedAt", "periodLabel", "sourceLabel", "entries", "error"})
+        self.assertEqual(set(result["entries"][0]), {"name", "calls", "inputTokens", "outputTokens", "totalTokens", "amountUSD", "sharePercent"})
+        serialized = json.dumps(result)
+        self.assertNotIn("PRIVATE", serialized)
+        self.assertNotIn(CONNECTION_ID, serialized)
+        self.assertEqual(result["sourceLabel"], "Example relay")
+
+    def test_empty_relay_requires_a_successful_snapshot(self):
+        raw = {**cache(), "entries": []}
+        result = bridge.safe_relay(raw, diagnostic(), RELAY_CONFIG, 1_800_000_000)
+        self.assertEqual(result["status"], "live")
+        self.assertEqual(result["entries"], [])
+        for status in ("loading", "unconnected", "unavailable", "stale", "snapshot"):
+            result = bridge.safe_relay({**raw, "status": status}, diagnostic(), RELAY_CONFIG, 1_800_000_000)
+            self.assertEqual(result["status"], "unconnected")
+
+    def test_relay_entry_limit_supports_large_valid_lists_without_partial_output(self):
+        for count in (101, 1000, 1001):
+            with self.subTest(count=count):
+                raw = cache()
+                raw["entries"] = [{"name": "Example " + str(i), "totalTokens": i, "amountUSD": 1}
+                                  for i in range(count)]
+                result = bridge.safe_relay(raw, diagnostic(), RELAY_CONFIG, 1_800_000_000)
+                if count <= 1000:
+                    self.assertEqual(result["status"], "live")
+                    self.assertEqual(len(result["entries"]), count)
+                    self.assertAlmostEqual(sum(row["sharePercent"] for row in result["entries"]), 100)
+                else:
+                    self.assertEqual(result["status"], "unconnected")
+                    self.assertEqual(result["entries"], [])
+
+    def test_only_relay_snapshot_receives_the_two_mib_read_limit(self):
+        now = time.time()
+        with tempfile.TemporaryDirectory() as directory:
+            support = Path(directory)
+            raw = {**cache(now), "unpublishedPadding": "x" * 300_000}
+            (support / "relay-config.json").write_text(json.dumps(RELAY_CONFIG))
+            (support / "relay-connection-state.json").write_text(json.dumps(diagnostic(now)))
+            snapshot_path = support / "relay-snapshot.json"
+            snapshot_path.write_text(json.dumps(raw))
+            result = bridge.DisplayData(support).read_relay()
+            self.assertEqual(result["status"], "live")
+            self.assertNotIn("unpublishedPadding", result)
+            raw["unpublishedPadding"] = "x" * bridge.MAX_RELAY_CACHE_BYTES
+            snapshot_path.write_text(json.dumps(raw))
+            self.assertEqual(bridge.DisplayData(support).read_relay()["status"], "unconnected")
+            snapshot_path.write_text(json.dumps(cache(now)))
+            (support / "relay-config.json").write_text(json.dumps({**RELAY_CONFIG, "unpublishedPadding": "x" * 300_000}))
+            self.assertEqual(bridge.DisplayData(support).read_relay()["status"], "unconnected")
+
+    def test_cached_mac_response_rechecks_configuration_and_ignores_old_brand_files(self):
+        now = time.time()
+        with tempfile.TemporaryDirectory() as directory:
+            support = Path(directory)
+            for filename, content in (("relay-config.json", RELAY_CONFIG), ("relay-snapshot.json", cache(now)),
+                                      ("relay-connection-state.json", diagnostic(now)),
+                                      ("starsg-snapshot.json", cache(now)), ("starsg-connection-state.json", diagnostic(now))):
+                (support / filename).write_text(json.dumps(content))
+            data = bridge.DisplayData(support)
+            with patch.object(data, "read_local", return_value=sample()) as read_local:
+                first = data.snapshot()
+                self.assertEqual(first["relay"]["status"], "live")
+                (support / "relay-config.json").write_text(json.dumps({"connectionID": OTHER_CONNECTION_ID}))
+                second = data.snapshot()
+                self.assertEqual(second["relay"]["status"], "unconnected")
+                self.assertEqual(second["relay"]["entries"], [])
+                self.assertEqual(read_local.call_count, 1)
+                (support / "relay-config.json").unlink()
+                third = data.snapshot()
+                self.assertEqual(third["relay"]["status"], "unconnected")
+                self.assertNotIn("starsg", third)
 
     def test_local_failure_preserves_last_timestamp_and_marks_stale(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -144,7 +300,7 @@ class HTTPTests(unittest.TestCase):
         (root / "shared/display.css").write_text("body{color:black}")
         (root / "shared/display.js").write_text("/* example */")
         self.server = bridge.DisplayServer(("127.0.0.1", 0), self.auth, FakeData(),
-            renderer=lambda data, mode: "<html>" + html.escape(data["starsg"]["entries"][0]["name"]) + mode + "</html>", resource_root=root)
+            renderer=lambda data, mode: "<html>" + html.escape(data["relay"]["entries"][0]["name"]) + mode + "</html>", resource_root=root)
         self.thread = threading.Thread(target=self.server.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True)
         self.thread.start()
         self.port = self.server.server_port
@@ -239,7 +395,7 @@ class RenderIntegrationTests(unittest.TestCase):
         from shared.render import render_page
         data = sample()
         dangerous = '</script><img src=x onerror="alert(1)">'
-        data["starsg"]["entries"][0]["name"] = dangerous
+        data["relay"]["entries"][0]["name"] = dangerous
         for mode in ("display", "kindle"):
             body = render_page(copy.deepcopy(data), mode=mode)
             self.assertNotIn(dangerous, body)
