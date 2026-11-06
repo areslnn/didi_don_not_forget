@@ -1,0 +1,17 @@
+build/
+dist/
+*.app/
+__pycache__/
+*.py[cod]
+.DS_Store
+.env
+.env.*
+!.env.example
+*.log
+.cache/
+.runtime/
+*.local.json
+starsg-snapshot.json
+starsg-connection-state.json
+display-sharing.json
+node_modules/

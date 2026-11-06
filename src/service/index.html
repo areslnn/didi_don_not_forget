@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#efefe8">
+  <title>桌面看板 · GPT & Mac</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <div class="workspace">
+    <nav class="toolbar" aria-label="看板操作">
+      <span class="toolbar-label"><span class="little-cross">✳</span> PERSONAL DASHBOARD</span>
+      <div class="toolbar-actions">
+        <button id="refresh" type="button"><span aria-hidden="true">↻</span> 刷新</button>
+        <button id="fullscreen" type="button" aria-pressed="false"><span aria-hidden="true">⛶</span> 专注</button>
+        <button id="info" type="button" aria-label="查看数据说明">数据说明 <span aria-hidden="true">↗</span></button>
+      </div>
+    </nav>
+    <main class="paper">
+      <header class="masthead">
+        <div><p class="eyebrow">YOUR MAC. YOUR WORKSPACE.</p><h1>桌面看板<span class="title-period">.</span></h1></div>
+        <div class="masthead-status"><p id="connection"><span class="dot"></span> 正在连接本机</p><p class="muted">电脑 10 秒更新 · 额度 5 分钟更新</p></div>
+      </header>
+      <div id="connection-alert" class="alert" role="status" hidden></div>
+      <div class="dashboard-grid">
+        <section class="machine" aria-label="Mac 状态">
+          <div class="section-heading"><span>01 <span class="heading-name">这台 Mac</span></span><span class="subtle" id="machine-name">macOS</span></div>
+          <div class="metrics-grid">
+            <article class="metric cpu">
+              <div><h2>CPU <span>处理器</span></h2><p class="device-name" id="cpu-name">读取中</p></div>
+              <div class="metric-body"><p class="metric-label">使用率</p><p class="metric-value"><span id="cpu-value">—</span><span class="unit">%</span></p><div class="meter" id="cpu-meter" role="meter" aria-label="CPU 使用率" aria-valuemin="0" aria-valuemax="100"><i></i></div></div>
+              <dl class="metric-bottom"><div><dt>核心数量</dt><dd id="cpu-cores">—</dd></div><div><dt>图形处理器</dt><dd id="gpu-name">—</dd></div></dl>
+            </article>
+            <article class="metric memory">
+              <div><h2>系统内存</h2><p class="device-name">已用 / 总量</p></div>
+              <div class="metric-body"><p class="metric-label">已用</p><p class="metric-value"><span id="memory-value">—</span><span class="unit">GB</span></p><div class="meter" id="memory-meter" role="meter" aria-label="内存使用率" aria-valuemin="0" aria-valuemax="100"><i></i></div></div>
+              <dl class="metric-bottom"><div><dt>总量</dt><dd id="memory-total">—</dd></div><div><dt>内存占用</dt><dd id="memory-pressure">—</dd></div></dl>
+            </article>
+            <article class="metric storage">
+              <div><h2>存储空间</h2><p class="device-name">Mac 启动磁盘</p></div>
+              <div class="metric-body"><p class="metric-label">可用</p><p class="metric-value"><span id="disk-value">—</span><span class="unit">GB</span></p><div class="meter" id="disk-meter" role="meter" aria-label="磁盘使用率" aria-valuemin="0" aria-valuemax="100"><i></i></div></div>
+              <dl class="metric-bottom"><div><dt>已用 / 总量</dt><dd id="disk-total">—</dd></div><div><dt>磁盘占用</dt><dd id="disk-percent">—</dd></div></dl>
+            </article>
+            <article class="metric power">
+              <div><h2>电源与运行</h2><p class="device-name" id="power-source">读取中</p></div>
+              <div class="metric-body"><p class="metric-label" id="power-label">电池电量</p><p class="metric-value" id="power-value"><span id="battery-value">—</span><span class="unit" id="battery-unit">%</span></p><div class="meter" id="battery-meter" role="meter" aria-label="电池电量" aria-valuemin="0" aria-valuemax="100"><i></i></div></div>
+              <dl class="metric-bottom"><div><dt>已连续运行</dt><dd id="uptime">—</dd></div><div><dt>本机采样</dt><dd id="system-updated">—</dd></div></dl>
+            </article>
+          </div>
+          <div class="machine-note"><span class="local-symbol" aria-hidden="true">⌘</span><p>让每一次专注，都心中有数。<span>本机状态 · 只读显示</span></p></div>
+        </section>
+        <aside class="account-column" aria-label="日期与账号额度">
+          <section class="calendar" aria-label="当前日期">
+            <div class="section-heading"><span>02 <span class="heading-name">今天</span></span><span id="year-month" class="subtle">—</span></div>
+            <div class="date-row"><span class="day" id="day">—</span><div class="date-side"><span id="weekday">—</span><time id="clock">--:--:--</time></div></div>
+          </section>
+          <section class="quota-section" aria-label="Codex 账号额度">
+            <div class="quota-title"><h2>Codex <span>账号额度</span></h2><span class="badge" id="plan">连接中</span></div>
+            <div id="quota-status" class="quota-status">正在读取当前登录账号</div>
+            <div id="quota-windows"><div class="quota-window"><p class="metric-label">剩余额度</p><p class="quota-value">—<span>%</span></p></div></div>
+            <p class="scope-note">ChatGPT 账号下的 Codex 额度</p>
+          </section>
+          <section class="reset-section" aria-label="可用重置卡">
+            <div class="reset-title"><h2>重置卡</h2><span id="reset-count">— 张可用</span></div>
+            <p class="reset-subtitle">有效期至 · 北京时间</p>
+            <ol id="reset-list"><li class="empty-state">正在读取</li></ol>
+            <p class="reset-note">仅展示，不会使用重置卡</p>
+          </section>
+        </aside>
+      </div>
+      <footer class="paper-footer"><span><span class="footer-mark" aria-hidden="true">◈</span> 本地看板 <span class="footer-separator">/</span> <span id="footer-date">—</span></span><span id="quota-updated">额度尚未同步</span></footer>
+    </main>
+    <div class="page-caption"><span>少一点干扰，多一点专注。</span><span>GPT & MAC <span class="caption-rule"></span> NO. 001</span></div>
+  </div>
+  <dialog id="info-dialog" aria-labelledby="info-title">
+    <div class="dialog-top"><span class="eyebrow">ABOUT THE DATA</span><button id="close-info" aria-label="关闭数据说明">✕</button></div>
+    <h2 id="info-title">这些数字，从哪里来？</h2>
+    <p><strong>账号额度</strong>读取这台 Mac 上 Codex 已登录账号的用量，每 5 分钟更新。显示的是 Codex 额度，不代表 ChatGPT 网页聊天、图片或 API 的总额度。</p>
+    <p><strong>电脑状态</strong>每 10 秒读取本机。内存包含正在使用和压缩的内存；macOS 缓存、可清理空间等口径可能与系统界面略有不同。温度、GPU 占用等没有可靠数据的指标不展示。</p>
+    <p><strong>未提供 ≠ 0。</strong>账号没有返回的额度窗口不会填入估计值。连接失败时保留最近一次读数，并标明更新时间。</p>
+    <p><strong>仅在本机运行。</strong>本看板不保存密码或令牌，不消耗重置卡。刷新按钮重新读取显示数据，账号查询仍遵守 5 分钟缓存。</p>
+    <p class="dialog-source">额度接口：<a href="https://learn.chatgpt.com/docs/app-server" target="_blank" rel="noreferrer">OpenAI 官方文档 ↗</a></p>
+  </dialog>
+</body>
+</html>

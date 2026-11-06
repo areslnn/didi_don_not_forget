@@ -1,0 +1,80 @@
+{
+  "demo": true,
+  "fetchedAt": "2026-01-01T04:00:00+00:00",
+  "account": {
+    "status": "live",
+    "updatedAt": "2026-01-01T04:00:00+00:00",
+    "planType": "example",
+    "windows": [
+      {
+        "key": "codex:primary",
+        "label": "每周额度",
+        "usedPercent": 32,
+        "remainingPercent": 68,
+        "windowDurationMins": 10080,
+        "resetsAt": 1767844800
+      }
+    ],
+    "resetCredits": {
+      "availableCount": 2,
+      "credits": [
+        {
+          "status": "available",
+          "expiresAt": 1767412800
+        },
+        {
+          "status": "available",
+          "expiresAt": 1768017600
+        }
+      ]
+    },
+    "error": null
+  },
+  "system": {
+    "updatedAt": "2026-01-01T04:00:00+00:00",
+    "cpu": {
+      "name": "示例处理器",
+      "cores": 8,
+      "usagePercent": 18
+    },
+    "gpu": {
+      "name": "示例集成显卡"
+    },
+    "memory": {
+      "usedBytes": 7516192768,
+      "totalBytes": 17179869184,
+      "pressure": "normal"
+    },
+    "disk": {
+      "usedBytes": 214748364800,
+      "totalBytes": 536870912000
+    },
+    "battery": {
+      "present": true,
+      "percent": 86,
+      "charging": false,
+      "onAC": false
+    },
+    "uptimeSeconds": 183600
+  },
+  "starsg": {
+    "status": "live",
+    "updatedAt": "2026-01-01T04:00:00+00:00",
+    "periodLabel": "最近30天",
+    "entries": [
+      {
+        "name": "研究项目",
+        "calls": 120,
+        "amountUSD": 12.34,
+        "sharePercent": 68.6
+      },
+      {
+        "name": "个人助手",
+        "calls": 60,
+        "amountUSD": 5.66,
+        "sharePercent": 31.4
+      }
+    ],
+    "error": null
+  }
+}
